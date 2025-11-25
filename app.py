@@ -192,3 +192,4 @@ if uploaded_file is not None:
 
 else:
     st.info("Veuillez importer un fichier Excel (.xlsx) pour commencer.")
+    
