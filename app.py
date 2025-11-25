@@ -9,11 +9,12 @@ st.title("📊 Analyse des coûts globaux des fiches individuelles")
 
 st.write(
     "Importez un fichier Excel contenant les fiches individuelles. "
-    "L'application génère un tableau récapitulatif (1 salarié par ligne, 1 colonne par mois) "
-    "et affiche des graphiques du coût global par salarié."
+    "L'application génère un récap (1 salarié par ligne, 1 colonne par mois) "
+    "et affiche un graphique comparatif du coût global pour les salariés sélectionnés."
 )
 
 uploaded_file = st.file_uploader("📂 Importer le fichier Excel", type=["xlsx"])
+
 
 def construire_tables(uploaded_file):
     """Lit le fichier Excel et renvoie (long_df, wide_df)."""
@@ -22,11 +23,11 @@ def construire_tables(uploaded_file):
 
     for sheet in xls.sheet_names:
         df = pd.read_excel(uploaded_file, sheet_name=sheet)
-        # Sauter les feuilles trop petites
+        # On saute les feuilles trop petites / vides
         if df.shape[0] < 3 or df.shape[1] < 3:
             continue
 
-        # 1) Récupérer le nom du salarié depuis le nom de la première colonne
+        # 1) Récupérer le nom du salarié à partir du titre de la première colonne
         col0 = str(df.columns[0])
         salarie = col0
         if "Fiche individuelle" in col0:
@@ -49,8 +50,7 @@ def construire_tables(uploaded_file):
             continue
         idx_header = df.index[mask_header][0]
 
-        # 4) Extraction des mois + coûts globaux
-        # Colonnes 2 à l'avant-dernière (on enlève la colonne "Total")
+        # 4) Extraction des mois + coûts globaux (colonnes 2 à l'avant-dernière)
         mois_labels = df.iloc[idx_header, 2:-1]
         cout_values = df.iloc[idx_cout, 2:-1]
 
@@ -78,12 +78,13 @@ def construire_tables(uploaded_file):
 
     return long_df, wide_df
 
+
 def ordonner_mois(df):
-    """Ajoute une colonne d'ordre temporel à partir de la colonne 'Mois' (ex: 'Janvier 2024')."""
+    """Ajoute une colonne d'ordre temporel à partir de 'Mois' (ex: 'Janvier 2024') et trie."""
     mois_map = {
         "Janvier": 1,
         "Février": 2,
-        "Fevrier": 2,  # au cas où sans accent
+        "Fevrier": 2,
         "Mars": 3,
         "Avril": 4,
         "Mai": 5,
@@ -99,7 +100,6 @@ def ordonner_mois(df):
     }
 
     def parse_mois(m):
-        # Ex: "Janvier 2024"
         parts = str(m).split()
         if len(parts) >= 2:
             nom = parts[0]
@@ -111,12 +111,13 @@ def ordonner_mois(df):
                 mois_num, annee_num = 0, 0
         else:
             mois_num, annee_num = 0, 0
-        return annee_num * 100 + mois_num  # tri par année puis mois
+        return annee_num * 100 + mois_num
 
-    df = df.copy()
-    df["ordre_mois"] = df["Mois"].apply(parse_mois)
-    df = df.sort_values("ordre_mois")
-    return df
+    out = df.copy()
+    out["ordre_mois"] = out["Mois"].apply(parse_mois)
+    out = out.sort_values("ordre_mois")
+    return out
+
 
 if uploaded_file is not None:
     st.success("Fichier importé ✔️")
@@ -124,52 +125,56 @@ if uploaded_file is not None:
     long_df, wide_df = construire_tables(uploaded_file)
 
     if long_df.empty or wide_df.empty:
-        st.error("⚠️ Aucun coût global détecté dans ce fichier. Vérifiez la structure (ligne 'Coût global').")
+        st.error("⚠️ Aucun coût global détecté dans ce fichier. Vérifiez la présence de la ligne 'Coût global'.")
     else:
         # --- Sélection des salariés ---
         st.subheader("👤 Sélection des salariés")
 
         liste_salaries = sorted(wide_df["Salarie"].unique().tolist())
         selection = st.multiselect(
-            "Sélectionnez un ou plusieurs salariés à afficher :",
+            "Sélectionnez les salariés à comparer sur le graphique :",
             options=liste_salaries,
-            default=liste_salaries[:5] if len(liste_salaries) > 5 else liste_salaries
+            default=liste_salaries  # TOUS sélectionnés par défaut
         )
 
-        # Filtrer le tableau large pour la sélection
+        # Filtrer le tableau large pour l’affichage
         if selection:
             wide_sel = wide_df[wide_df["Salarie"].isin(selection)]
         else:
-            wide_sel = wide_df.iloc[0:0]  # vide si rien sélectionné
+            wide_sel = wide_df.iloc[0:0]
 
         st.subheader("📄 Tableau récapitulatif (coût global)")
         st.dataframe(wide_sel, use_container_width=True)
 
-        # --- Graphiques matplotlib ---
-        st.subheader("📈 Graphiques du coût global par salarié")
+        # --- Graphique unique comparatif ---
+        st.subheader("📈 Coût global comparé (tous les salariés sélectionnés)")
 
         if selection:
-            for salarie in selection:
-                st.markdown(f"### {salarie}")
+            fig, ax = plt.subplots()
 
+            # On construit un df filtré et trié par mois
+            for salarie in selection:
                 data_sal = long_df[long_df["Salarie"] == salarie]
                 if data_sal.empty:
-                    st.info("Aucune donnée pour ce salarié.")
                     continue
-
                 data_sal = ordonner_mois(data_sal)
+                ax.plot(
+                    data_sal["Mois"],
+                    data_sal["Cout_global"],
+                    marker="o",
+                    label=salarie
+                )
 
-                fig, ax = plt.subplots()
-                ax.plot(data_sal["Mois"], data_sal["Cout_global"], marker="o")
-                ax.set_xlabel("Mois")
-                ax.set_ylabel("Coût global")
-                ax.set_title(f"Coût global mensuel - {salarie}")
-                plt.xticks(rotation=45, ha="right")
-                plt.tight_layout()
+            ax.set_xlabel("Mois")
+            ax.set_ylabel("Coût global")
+            ax.set_title("Évolution du coût global par mois")
+            plt.xticks(rotation=45, ha="right")
+            ax.legend()
+            plt.tight_layout()
 
-                st.pyplot(fig)
+            st.pyplot(fig)
         else:
-            st.info("Sélectionnez au moins un salarié pour afficher les graphiques.")
+            st.info("Sélectionnez au moins un salarié pour afficher le graphique.")
 
         # --- Export Excel du tableau large complet ---
         st.subheader("💾 Export")
