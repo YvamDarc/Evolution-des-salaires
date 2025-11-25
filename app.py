@@ -83,23 +83,13 @@ def construire_tables(uploaded_file):
 
 
 def enrichir_mois(long_df: pd.DataFrame) -> pd.DataFrame:
-    """Ajoute des colonnes 'ordre_mois' et 'Date' pour trier / filtrer."""
+    """Ajoute des colonnes 'Date' et 'ordre_mois' pour trier/filtrer."""
     mois_map = {
         "Janvier": 1, "Février": 2, "Fevrier": 2, "Mars": 3, "Avril": 4,
         "Mai": 5, "Juin": 6, "Juillet": 7, "Août": 8, "Aout": 8,
-        "Septembre": 9, "Octobre": 10, "Novembre": 11, "Décembre": 12, "Decembre": 12
+        "Septembre": 9, "Octobre": 10, "Novembre": 11,
+        "Décembre": 12, "Decembre": 12,
     }
-
-    def parse_ordre(m):
-        parts = str(m).split()
-        if len(parts) >= 2:
-            nom = parts[0]
-            annee = parts[-1]
-            try:
-                return int(annee) * 100 + mois_map.get(nom, 0)
-            except Exception:
-                return 0
-        return 0
 
     def parse_date(m):
         parts = str(m).split()
@@ -115,9 +105,9 @@ def enrichir_mois(long_df: pd.DataFrame) -> pd.DataFrame:
         return None
 
     df = long_df.copy()
-    df["ordre_mois"] = df["Mois"].apply(parse_ordre)
     df["Date"] = df["Mois"].apply(parse_date)
     df = df.dropna(subset=["Date"])
+    df = df.sort_values("Date")
     return df
 
 
@@ -133,48 +123,53 @@ if uploaded_file is not None:
         st.error("⚠️ Aucun coût global détecté. Vérifiez la présence de la ligne 'Coût global'.")
         st.stop()
 
-    # Enrichir avec une vraie date et un ordre de mois
+    # Enrichir avec une vraie date
     long_df = enrichir_mois(long_df)
 
-    # --- Sélection période globale (slider) ---
-    min_date = long_df["Date"].min()
-    max_date = long_df["Date"].max()
+    # --- PÉRIODE : slider sur index (pas de bug de type) ---
+    unique_dates = sorted(long_df["Date"].unique())
+    if not unique_dates:
+        st.error("Impossible de déterminer les dates (colonne 'Mois').")
+        st.stop()
 
     st.subheader("📆 Période analysée")
-    start_date, end_date = st.slider(
-        "Sélectionnez la période à afficher :",
-        min_value=min_date,
-        max_value=max_date,
-        value=(min_date, max_date),
-        format="MM/YYYY"
-    )
 
-    # --- Sélection des salariés ---
+    min_idx, max_idx = 0, len(unique_dates) - 1
+    idx_start, idx_end = st.slider(
+        "Sélectionnez la période à afficher :",
+        min_value=min_idx,
+        max_value=max_idx,
+        value=(min_idx, max_idx),
+    )
+    start_date = unique_dates[idx_start]
+    end_date = unique_dates[idx_end]
+
+    # --- SÉLECTION DES SALARIÉS ---
     st.subheader("👤 Sélection des salariés")
 
     liste_salaries = sorted(wide_df["Salarie"].unique().tolist())
 
-    # Initialisation de la sélection dans session_state
-    if "selected_salaries" not in st.session_state:
-        st.session_state["selected_salaries"] = liste_salaries
+    # Valeur par défaut : tous les salariés
+    default_selection = st.session_state.get("selected_salaries", liste_salaries)
 
-    # Boutons pour tout sélectionner / désélectionner
     col_all, col_none = st.columns(2)
     with col_all:
         if st.button("✅ Tout sélectionner"):
+            default_selection = liste_salaries
             st.session_state["selected_salaries"] = liste_salaries
     with col_none:
         if st.button("❌ Tout désélectionner"):
+            default_selection = []
             st.session_state["selected_salaries"] = []
 
     selection = st.multiselect(
         "Salariés à comparer sur le graphique :",
         options=liste_salaries,
-        default=st.session_state["selected_salaries"],
+        default=default_selection,
         key="selected_salaries"
     )
 
-    # Tableau récap (non filtré sur période pour l’instant)
+    # Tableau récap (non filtré sur période, pour garder la vision globale)
     if selection:
         wide_sel = wide_df[wide_df["Salarie"].isin(selection)]
     else:
@@ -183,15 +178,12 @@ if uploaded_file is not None:
     st.subheader("📄 Tableau récapitulatif (coût global)")
     st.dataframe(wide_sel, use_container_width=True)
 
-    # --- Graphique Plotly ---
+    # --- GRAPHIQUE PLOTLY ---
     st.subheader("📈 Coût global comparé (graphique interactif Plotly)")
 
     if selection:
         data_plot = long_df[long_df["Salarie"].isin(selection)].copy()
-        # Filtrer sur la période choisie
         data_plot = data_plot[(data_plot["Date"] >= start_date) & (data_plot["Date"] <= end_date)]
-        # Trier
-        data_plot = data_plot.sort_values(["Date", "Salarie"])
 
         if data_plot.empty:
             st.info("Aucune donnée dans la période sélectionnée.")
@@ -214,7 +206,7 @@ if uploaded_file is not None:
                 legend=dict(
                     orientation="h",
                     yanchor="top",
-                    y=-0.25,        # en dessous du graph
+                    y=-0.25,        # en dessous du graphique
                     xanchor="center",
                     x=0.5
                 ),
@@ -225,7 +217,7 @@ if uploaded_file is not None:
     else:
         st.info("Sélectionnez au moins un salarié pour afficher le graphique.")
 
-    # --- Export Excel ---
+    # --- EXPORT EXCEL ---
     st.subheader("💾 Export Excel complet")
 
     buffer = io.BytesIO()
