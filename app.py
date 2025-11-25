@@ -3,6 +3,7 @@ import pandas as pd
 import io
 import plotly.express as px
 from datetime import datetime
+import re
 
 st.set_page_config(page_title="Analyse Coût Global", layout="wide")
 
@@ -10,18 +11,27 @@ st.title("📊 Analyse des coûts globaux des fiches individuelles")
 
 st.write(
     "Importez un fichier Excel contenant les fiches individuelles. "
-    "L'application génère un récap (1 salarié par ligne, 1 colonne par mois) "
+    "L'application génère un récap (1 salarié par ligne, 1 colonne par mois), "
+    "permet un classement par sous-groupe (administratif / entretien / soin / non renseigné) "
     "et affiche un graphique comparatif interactif avec Plotly."
 )
 
-uploaded_file = st.file_uploader("📂 Importer le fichier Excel", type=["xlsx"])
-
 
 # -----------------------------------------------------------
-#  FONCTIONS
+#  FONCTIONS UTILITAIRES
 # -----------------------------------------------------------
+def clean_salarie(name: str) -> str:
+    """Nettoie le nom du salarié (supprime ' - Total', espaces, etc.)."""
+    if not isinstance(name, str):
+        name = str(name)
+    # supprime " - Total" ou "Total" en fin de chaîne, insensible à la casse
+    name = re.sub(r"\s*-\s*Total\s*$", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"\s+Total\s*$", "", name, flags=re.IGNORECASE)
+    return name.strip()
+
+
 def construire_tables(uploaded_file):
-    """Lit le fichier Excel et renvoie (long_df, wide_df)."""
+    """Lit le fichier Excel principal et renvoie (long_df, wide_df)."""
     xls = pd.ExcelFile(uploaded_file)
     rows = []
 
@@ -40,6 +50,8 @@ def construire_tables(uploaded_file):
                 salarie = col0.split("Fiche individuelle -", 1)[1].split("- De", 1)[0].strip()
             except Exception:
                 pass
+
+        salarie = clean_salarie(salarie)
 
         # 2) Ligne "Coût global"
         mask_cg = df.iloc[:, 1] == "Coût global"
@@ -60,11 +72,13 @@ def construire_tables(uploaded_file):
         for m, c in zip(mois, couts):
             if pd.isna(m) or pd.isna(c):
                 continue
-            rows.append({
-                "Salarie": salarie,
-                "Mois": str(m),
-                "Cout_global": float(c)
-            })
+            rows.append(
+                {
+                    "Salarie": salarie,
+                    "Mois": str(m),
+                    "Cout_global": float(c),
+                }
+            )
 
     long_df = pd.DataFrame(rows)
 
@@ -72,23 +86,37 @@ def construire_tables(uploaded_file):
         return long_df, pd.DataFrame()
 
     # Tableau large : 1 ligne par salarié, 1 colonne par mois
-    wide_df = long_df.pivot_table(
-        index="Salarie",
-        columns="Mois",
-        values="Cout_global",
-        aggfunc="sum"
-    ).reset_index()
+    wide_df = (
+        long_df.pivot_table(
+            index="Salarie",
+            columns="Mois",
+            values="Cout_global",
+            aggfunc="sum",
+        )
+        .reset_index()
+    )
 
     return long_df, wide_df
 
 
 def enrichir_mois(long_df: pd.DataFrame) -> pd.DataFrame:
-    """Ajoute des colonnes 'Date' et 'ordre_mois' pour trier/filtrer."""
+    """Ajoute une vraie Date pour trier/filtrer chronologiquement."""
     mois_map = {
-        "Janvier": 1, "Février": 2, "Fevrier": 2, "Mars": 3, "Avril": 4,
-        "Mai": 5, "Juin": 6, "Juillet": 7, "Août": 8, "Aout": 8,
-        "Septembre": 9, "Octobre": 10, "Novembre": 11,
-        "Décembre": 12, "Decembre": 12,
+        "Janvier": 1,
+        "Février": 2,
+        "Fevrier": 2,
+        "Mars": 3,
+        "Avril": 4,
+        "Mai": 5,
+        "Juin": 6,
+        "Juillet": 7,
+        "Août": 8,
+        "Aout": 8,
+        "Septembre": 9,
+        "Octobre": 10,
+        "Novembre": 11,
+        "Décembre": 12,
+        "Decembre": 12,
     }
 
     def parse_date(m):
@@ -111,11 +139,51 @@ def enrichir_mois(long_df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def appliquer_mapping_sous_groupes(
+    long_df: pd.DataFrame, wide_df: pd.DataFrame, mapping_df: pd.DataFrame | None
+):
+    """
+    Ajoute une colonne 'Sous_groupe' aux salariés.
+    - Par défaut : 'non renseigné'
+    - Si un mapping est fourni : on remplace par le sous-groupe indiqué.
+    """
+    sal_df = pd.DataFrame({"Salarie": sorted(long_df["Salarie"].unique())})
+    sal_df["Sous_groupe"] = "non renseigné"
+
+    if mapping_df is not None and not mapping_df.empty:
+        # Essaie d'identifier automatiquement les colonnes salarié / sous-groupe
+        sal_col = None
+        sg_col = None
+        for c in mapping_df.columns:
+            cl = c.lower()
+            if sal_col is None and "alar" in cl:  # salarie, salarié…
+                sal_col = c
+            if sg_col is None and ("sous" in cl or "groupe" in cl):
+                sg_col = c
+
+        if sal_col and sg_col:
+            tmp = mapping_df[[sal_col, sg_col]].dropna()
+            tmp = tmp.rename(columns={sal_col: "Salarie", sg_col: "Sous_groupe"})
+            tmp["Salarie"] = tmp["Salarie"].apply(clean_salarie)
+
+            sal_df = sal_df.merge(tmp, on="Salarie", how="left", suffixes=("", "_map"))
+            sal_df["Sous_groupe"] = sal_df["Sous_groupe_map"].fillna(sal_df["Sous_groupe"])
+            sal_df = sal_df[["Salarie", "Sous_groupe"]]
+
+    # Merge sur les tables principales
+    long_df = long_df.merge(sal_df, on="Salarie", how="left")
+    wide_df = wide_df.merge(sal_df, on="Salarie", how="left")
+
+    return long_df, wide_df, sal_df
+
+
 # -----------------------------------------------------------
 #  APPLICATION
 # -----------------------------------------------------------
+uploaded_file = st.file_uploader("📂 Importer le fichier Excel principal", type=["xlsx"])
+
 if uploaded_file is not None:
-    st.success("Fichier importé ✔️")
+    st.success("Fichier principal importé ✔️")
 
     long_df, wide_df = construire_tables(uploaded_file)
 
@@ -123,10 +191,37 @@ if uploaded_file is not None:
         st.error("⚠️ Aucun coût global détecté. Vérifiez la présence de la ligne 'Coût global'.")
         st.stop()
 
-    # Enrichir avec une vraie date
+    # Ajout colonne Date
     long_df = enrichir_mois(long_df)
 
-    # --- PÉRIODE : slider sur index (pas de bug de type) ---
+    # -------------------------------------------------------
+    # 2ᵉ BOUTON : IMPORT DE LA TABLE DE SOUS-GROUPES
+    # -------------------------------------------------------
+    st.subheader("🏷️ Sous-groupes métiers (optionnel)")
+
+    mapping_df = None
+    if st.checkbox("Importer un fichier de correspondance Salarié / Sous_groupe ?"):
+        mapping_file = st.file_uploader(
+            "Fichier de sous-groupes (Excel ou CSV avec colonnes Salarié / Sous_groupe)",
+            type=["xlsx", "csv"],
+            key="mapping_uploader",
+        )
+        if mapping_file is not None:
+            try:
+                if mapping_file.name.lower().endswith(".csv"):
+                    mapping_df = pd.read_csv(mapping_file, sep=None, engine="python")
+                else:
+                    mapping_df = pd.read_excel(mapping_file)
+                st.success("Fichier de sous-groupes importé ✔️")
+            except Exception as e:
+                st.error(f"Impossible de lire le fichier de sous-groupes : {e}")
+
+    # Appliquer la correspondance (ou 'non renseigné' par défaut)
+    long_df, wide_df, sal_df = appliquer_mapping_sous_groupes(long_df, wide_df, mapping_df)
+
+    # -------------------------------------------------------
+    # SLIDER DE PÉRIODE
+    # -------------------------------------------------------
     unique_dates = sorted(long_df["Date"].unique())
     if not unique_dates:
         st.error("Impossible de déterminer les dates (colonne 'Mois').")
@@ -144,81 +239,76 @@ if uploaded_file is not None:
     start_date = unique_dates[idx_start]
     end_date = unique_dates[idx_end]
 
-    # --- SÉLECTION DES SALARIÉS ---
-    st.subheader("👤 Sélection des salariés")
+    # -------------------------------------------------------
+    # SÉLECTION DES SOUS-GROUPES
+    # -------------------------------------------------------
+    st.subheader("🧩 Filtre par sous-groupe")
 
-    liste_salaries = sorted(wide_df["Salarie"].unique().tolist())
-
-    # Valeur par défaut : tous les salariés
-    default_selection = st.session_state.get("selected_salaries", liste_salaries)
-
-    col_all, col_none = st.columns(2)
-    with col_all:
-        if st.button("✅ Tout sélectionner"):
-            default_selection = liste_salaries
-            st.session_state["selected_salaries"] = liste_salaries
-    with col_none:
-        if st.button("❌ Tout désélectionner"):
-            default_selection = []
-            st.session_state["selected_salaries"] = []
-
-    selection = st.multiselect(
-        "Salariés à comparer sur le graphique :",
-        options=liste_salaries,
-        default=default_selection,
-        key="selected_salaries"
+    sous_groupes = sorted(sal_df["Sous_groupe"].unique().tolist())
+    selected_groups = st.multiselect(
+        "Sous-groupes à afficher sur le graphique :",
+        options=sous_groupes,
+        default=sous_groupes,  # tous par défaut, y compris 'non renseigné'
     )
 
-    # Tableau récap (non filtré sur période, pour garder la vision globale)
-    if selection:
-        wide_sel = wide_df[wide_df["Salarie"].isin(selection)]
+    # -------------------------------------------------------
+    # TABLE SALARIÉS / SOUS-GROUPE (pour contrôle visuel)
+    # -------------------------------------------------------
+    st.markdown("**Table des salariés et de leur sous-groupe :**")
+    st.dataframe(sal_df, use_container_width=True)
+
+    # -------------------------------------------------------
+    # GRAPHIQUE PLOTLY AGRÉGÉ PAR SOUS-GROUPE
+    # -------------------------------------------------------
+    st.subheader("📈 Coût global par sous-groupe (agrégé)")
+
+    data_plot = long_df.copy()
+    data_plot = data_plot[
+        (data_plot["Date"] >= start_date)
+        & (data_plot["Date"] <= end_date)
+        & (data_plot["Sous_groupe"].isin(selected_groups))
+    ]
+
+    if data_plot.empty:
+        st.info("Aucune donnée dans la période / les sous-groupes sélectionnés.")
     else:
-        wide_sel = wide_df.iloc[0:0]
+        # Agrégation par Date & Sous_groupe
+        agg_df = (
+            data_plot.groupby(["Date", "Mois", "Sous_groupe"], as_index=False)["Cout_global"]
+            .sum()
+        )
 
-    st.subheader("📄 Tableau récapitulatif (coût global)")
-    st.dataframe(wide_sel, use_container_width=True)
+        fig = px.line(
+            agg_df,
+            x="Date",
+            y="Cout_global",
+            color="Sous_groupe",
+            markers=True,
+            hover_data=["Sous_groupe", "Mois", "Cout_global"],
+        )
 
-    # --- GRAPHIQUE PLOTLY ---
-    st.subheader("📈 Coût global comparé (graphique interactif Plotly)")
+        fig.update_layout(
+            xaxis_title="Mois",
+            yaxis_title="Coût global (€)",
+            title="Évolution du coût global mensuel par sous-groupe",
+            xaxis_tickformat="%m/%Y",
+            legend_title_text="Sous-groupe",
+            legend=dict(
+                orientation="h",
+                yanchor="top",
+                y=-0.25,  # légende sous le graphique
+                xanchor="center",
+                x=0.5,
+            ),
+            margin=dict(l=40, r=40, t=60, b=120),
+        )
 
-    if selection:
-        data_plot = long_df[long_df["Salarie"].isin(selection)].copy()
-        data_plot = data_plot[(data_plot["Date"] >= start_date) & (data_plot["Date"] <= end_date)]
+        st.plotly_chart(fig, use_container_width=True)
 
-        if data_plot.empty:
-            st.info("Aucune donnée dans la période sélectionnée.")
-        else:
-            fig = px.line(
-                data_plot,
-                x="Date",
-                y="Cout_global",
-                color="Salarie",
-                markers=True,
-                hover_data=["Salarie", "Mois", "Cout_global"]
-            )
-
-            fig.update_layout(
-                xaxis_title="Mois",
-                yaxis_title="Coût global (€)",
-                title="Évolution du coût global mensuel par salarié",
-                xaxis_tickformat="%m/%Y",
-                legend_title_text="Salarié",
-                legend=dict(
-                    orientation="h",
-                    yanchor="top",
-                    y=-0.25,        # en dessous du graphique
-                    xanchor="center",
-                    x=0.5
-                ),
-                margin=dict(l=40, r=40, t=60, b=120),
-            )
-
-            st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Sélectionnez au moins un salarié pour afficher le graphique.")
-
-    # --- EXPORT EXCEL ---
-    st.subheader("💾 Export Excel complet")
+    # -------------------------------------------------------
+    # EXPORT EXCEL
+    # -------------------------------------------------------
+    st.subheader("💾 Export Excel complet (par salarié / mois)")
 
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
@@ -228,8 +318,8 @@ if uploaded_file is not None:
         label="📥 Télécharger le récap (tous les salariés)",
         data=buffer.getvalue(),
         file_name="recap_cout_global_par_salarie_par_mois.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
 else:
-    st.info("Veuillez importer un fichier Excel (.xlsx) pour commencer.")
+    st.info("Veuillez importer un fichier Excel principal (.xlsx) pour commencer.")
