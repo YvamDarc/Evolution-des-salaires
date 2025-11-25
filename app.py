@@ -83,7 +83,7 @@ def construire_tables(uploaded_file):
     if long_df.empty:
         return long_df, pd.DataFrame()
 
-    # Tableau large : 1 ligne / salarié, 1 colonne / mois (on tri les colonnes après)
+    # Tableau large : 1 ligne / salarié, 1 colonne / mois (on trie les colonnes après)
     wide_df = long_df.pivot_table(
         index="Salarie",
         columns="Mois",
@@ -334,12 +334,15 @@ if "long_df" in st.session_state:
             if data_plot.empty:
                 st.info("Aucune donnée pour les sous-groupes / période sélectionnés.")
             else:
+                # ---------- Graphique 1 : agrégé par sous-groupe ----------
                 agg = (
                     data_plot
                     .groupby(["Date", "Mois", "Sous_groupe"], as_index=False)["Cout_global"]
                     .sum()
                 )
-                fig = px.line(
+
+                st.markdown("### 📌 Vue 1 : Coût global **agrégé par sous-groupe**")
+                fig1 = px.line(
                     agg,
                     x="Date",
                     y="Cout_global",
@@ -347,7 +350,7 @@ if "long_df" in st.session_state:
                     markers=True,
                     hover_data=["Sous_groupe", "Mois", "Cout_global"]
                 )
-                fig.update_layout(
+                fig1.update_layout(
                     xaxis_title="Mois",
                     yaxis_title="Coût global (€)",
                     title="Évolution du coût global mensuel par sous-groupe",
@@ -361,7 +364,33 @@ if "long_df" in st.session_state:
                     ),
                     margin=dict(l=40, r=40, t=60, b=120),
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig1, use_container_width=True)
+
+                # ---------- Graphique 2 : détail par salarié ----------
+                st.markdown("### 👥 Vue 2 : Détail **par salarié** des sous-groupes sélectionnés")
+                fig2 = px.line(
+                    data_plot,
+                    x="Date",
+                    y="Cout_global",
+                    color="Salarie",
+                    markers=True,
+                    hover_data=["Salarie", "Sous_groupe", "Mois", "Cout_global"]
+                )
+                fig2.update_layout(
+                    xaxis_title="Mois",
+                    yaxis_title="Coût global (€)",
+                    title="Évolution du coût global mensuel par salarié (sous-groupes sélectionnés)",
+                    xaxis_tickformat="%m/%Y",
+                    legend=dict(
+                        orientation="h",
+                        yanchor="top",
+                        y=-0.35,   # un peu plus bas car beaucoup de monde
+                        xanchor="center",
+                        x=0.5
+                    ),
+                    margin=dict(l=40, r=40, t=60, b=140),
+                )
+                st.plotly_chart(fig2, use_container_width=True)
 
     # Export Excel du tableau trié
     st.subheader("💾 Export du tableau par salarié")
