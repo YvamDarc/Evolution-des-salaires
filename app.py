@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import io
 import plotly.express as px
+from datetime import datetime
 
 st.set_page_config(page_title="Analyse Coût Global", layout="wide")
 
@@ -81,15 +82,15 @@ def construire_tables(uploaded_file):
     return long_df, wide_df
 
 
-def ajouter_ordre_mois(df):
-    """Ajoute une colonne 'ordre_mois' pour trier correctement les mois (Janvier 2024, etc.)."""
+def enrichir_mois(long_df: pd.DataFrame) -> pd.DataFrame:
+    """Ajoute des colonnes 'ordre_mois' et 'Date' pour trier / filtrer."""
     mois_map = {
         "Janvier": 1, "Février": 2, "Fevrier": 2, "Mars": 3, "Avril": 4,
         "Mai": 5, "Juin": 6, "Juillet": 7, "Août": 8, "Aout": 8,
         "Septembre": 9, "Octobre": 10, "Novembre": 11, "Décembre": 12, "Decembre": 12
     }
 
-    def parse(m):
+    def parse_ordre(m):
         parts = str(m).split()
         if len(parts) >= 2:
             nom = parts[0]
@@ -100,8 +101,23 @@ def ajouter_ordre_mois(df):
                 return 0
         return 0
 
-    df = df.copy()
-    df["ordre_mois"] = df["Mois"].apply(parse)
+    def parse_date(m):
+        parts = str(m).split()
+        if len(parts) >= 2:
+            nom = parts[0]
+            annee = parts[-1]
+            try:
+                mois_num = mois_map.get(nom, 1)
+                annee_num = int(annee)
+                return datetime(annee_num, mois_num, 1)
+            except Exception:
+                return None
+        return None
+
+    df = long_df.copy()
+    df["ordre_mois"] = df["Mois"].apply(parse_ordre)
+    df["Date"] = df["Mois"].apply(parse_date)
+    df = df.dropna(subset=["Date"])
     return df
 
 
@@ -117,18 +133,48 @@ if uploaded_file is not None:
         st.error("⚠️ Aucun coût global détecté. Vérifiez la présence de la ligne 'Coût global'.")
         st.stop()
 
+    # Enrichir avec une vraie date et un ordre de mois
+    long_df = enrichir_mois(long_df)
+
+    # --- Sélection période globale (slider) ---
+    min_date = long_df["Date"].min()
+    max_date = long_df["Date"].max()
+
+    st.subheader("📆 Période analysée")
+    start_date, end_date = st.slider(
+        "Sélectionnez la période à afficher :",
+        min_value=min_date,
+        max_value=max_date,
+        value=(min_date, max_date),
+        format="MM/YYYY"
+    )
+
     # --- Sélection des salariés ---
     st.subheader("👤 Sélection des salariés")
 
     liste_salaries = sorted(wide_df["Salarie"].unique().tolist())
 
+    # Initialisation de la sélection dans session_state
+    if "selected_salaries" not in st.session_state:
+        st.session_state["selected_salaries"] = liste_salaries
+
+    # Boutons pour tout sélectionner / désélectionner
+    col_all, col_none = st.columns(2)
+    with col_all:
+        if st.button("✅ Tout sélectionner"):
+            st.session_state["selected_salaries"] = liste_salaries
+    with col_none:
+        if st.button("❌ Tout désélectionner"):
+            st.session_state["selected_salaries"] = []
+
     selection = st.multiselect(
         "Salariés à comparer sur le graphique :",
         options=liste_salaries,
-        default=liste_salaries  # TOUS sélectionnés par défaut
+        default=st.session_state["selected_salaries"],
+        key="selected_salaries"
     )
 
-    # Tableau récap filtré
+    # Tableau récap (non filtré sur période pour l’instant)
     if selection:
         wide_sel = wide_df[wide_df["Salarie"].isin(selection)]
     else:
@@ -141,36 +187,41 @@ if uploaded_file is not None:
     st.subheader("📈 Coût global comparé (graphique interactif Plotly)")
 
     if selection:
-        data_plot = long_df[long_df["Salarie"].isin(selection)]
-        data_plot = ajouter_ordre_mois(data_plot)
-        data_plot = data_plot.sort_values("ordre_mois")
+        data_plot = long_df[long_df["Salarie"].isin(selection)].copy()
+        # Filtrer sur la période choisie
+        data_plot = data_plot[(data_plot["Date"] >= start_date) & (data_plot["Date"] <= end_date)]
+        # Trier
+        data_plot = data_plot.sort_values(["Date", "Salarie"])
 
-        fig = px.line(
-            data_plot,
-            x="Mois",
-            y="Cout_global",
-            color="Salarie",
-            markers=True,
-            hover_data=["Salarie", "Mois", "Cout_global"]
-        )
+        if data_plot.empty:
+            st.info("Aucune donnée dans la période sélectionnée.")
+        else:
+            fig = px.line(
+                data_plot,
+                x="Date",
+                y="Cout_global",
+                color="Salarie",
+                markers=True,
+                hover_data=["Salarie", "Mois", "Cout_global"]
+            )
 
-        fig.update_layout(
-            xaxis_title="Mois",
-            yaxis_title="Coût global (€)",
-            title="Évolution du coût global mensuel par salarié",
-            xaxis_tickangle=-45,
-            legend_title_text="Salarié",
-            legend=dict(
-                orientation="h",
-                yanchor="top",
-                y=-0.3,        # en dessous du graph
-                xanchor="center",
-                x=0.5
-            ),
-            margin=dict(l=40, r=40, t=60, b=120),
-        )
+            fig.update_layout(
+                xaxis_title="Mois",
+                yaxis_title="Coût global (€)",
+                title="Évolution du coût global mensuel par salarié",
+                xaxis_tickformat="%m/%Y",
+                legend_title_text="Salarié",
+                legend=dict(
+                    orientation="h",
+                    yanchor="top",
+                    y=-0.25,        # en dessous du graph
+                    xanchor="center",
+                    x=0.5
+                ),
+                margin=dict(l=40, r=40, t=60, b=120),
+            )
 
-        st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("Sélectionnez au moins un salarié pour afficher le graphique.")
 
